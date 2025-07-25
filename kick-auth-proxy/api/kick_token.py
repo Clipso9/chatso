@@ -1,64 +1,66 @@
-from flask import Flask, request, jsonify
-import requests
+from http.server import BaseHTTPRequestHandler
+import json
 import os
+import requests
 
-# Flask uygulaması oluşturuluyor. Vercel bunu otomatik olarak çalıştıracak.
-app = Flask(__name__)
+class handler(BaseHTTPRequestHandler):
 
-@app.route('/', methods=['POST', 'GET'])
-def handler():
-    # CORS (Cross-Origin Resource Sharing) başlıkları. 
-    # Farklı bir domainden (senin uygulaman) istek geleceği için bu gerekli.
-    headers = {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type'
-    }
+    def do_POST(self):
+        CLIENT_ID = os.environ.get('KICK_CLIENT_ID')
+        CLIENT_SECRET = os.environ.get('KICK_CLIENT_SECRET')
 
-    # Tarayıcıların gönderdiği OPTIONS isteğine yanıt vermek için.
-    if request.method == 'OPTIONS':
-        return ('', 204, headers)
+        if not CLIENT_ID or not CLIENT_SECRET:
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Server configuration error"}).encode())
+            return
 
-    # Sadece POST isteklerini kabul et
-    if request.method != 'POST':
-        return jsonify({"error": "Only POST requests are accepted"}), 405, headers
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        body = json.loads(post_data)
 
-    # Vercel'de ayarladığımız ortam değişkenlerinden (environment variables) gizli bilgileri al.
-    # Bu bilgiler asla kodun içinde yer almaz.
-    CLIENT_ID = os.environ.get('KICK_CLIENT_ID')
-    CLIENT_SECRET = os.environ.get('KICK_CLIENT_SECRET')
+        if 'code' not in body or 'redirect_uri' not in body or 'code_verifier' not in body:
+            self.send_response(400)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Missing required parameters"}).encode())
+            return
+            
+        payload = {
+            'grant_type': 'authorization_code',
+            'code': body['code'],
+            'redirect_uri': body['redirect_uri'],
+            'client_id': CLIENT_ID,
+            'client_secret': CLIENT_SECRET,
+            'code_verifier': body['code_verifier']
+        }
 
-    if not CLIENT_ID or not CLIENT_SECRET:
-        return jsonify({"error": "Server configuration error: Client ID or Secret not set"}), 500, headers
+        try:
+            response = requests.post('https://id.kick.com/oauth/token', data=payload)
+            response.raise_for_status()
+            
+            self.send_response(response.status_code)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(response.text.encode())
 
-    # Masaüstü uygulamasından gelen JSON verisini al.
-    data = request.get_json()
-    if not data or 'code' not in data or 'redirect_uri' not in data:
-        return jsonify({"error": "Missing 'code' or 'redirect_uri' in request"}), 400, headers
-    
-    auth_code = data['code']
-    redirect_uri = data['redirect_uri']
-    code_verifier = data.get('code_verifier') # PKCE için bu da gerekli
+        except requests.exceptions.RequestException as e:
+            self.send_response(502)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            error_details = str(e.response.text) if e.response else str(e)
+            self.wfile.write(json.dumps({"error": "Failed to communicate with Kick API", "details": error_details}).encode())
+        return
 
-    # Kick'in token endpoint'ine gönderilecek payload'ı oluştur.
-    payload = {
-        'grant_type': 'authorization_code',
-        'code': auth_code,
-        'redirect_uri': redirect_uri,
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'code_verifier': code_verifier
-    }
-
-    try:
-        # Kick API'sine token isteğini gönder.
-        response = requests.post('https://id.kick.com/oauth/token', data=payload)
-        response.raise_for_status()  # HTTP hatası varsa exception fırlat.
-        
-        # Kick'ten gelen yanıtı doğrudan masaüstü uygulamasına geri döndür.
-        return (response.text, response.status_code, headers)
-
-    except requests.exceptions.RequestException as e:
-        # Bir hata olursa, hatayı JSON formatında döndür.
-        error_message = str(e.response.text) if e.response else str(e)
-        return jsonify({"error": "Failed to communicate with Kick API", "details": error_message}), 502, headers
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+        return
