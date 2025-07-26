@@ -33,6 +33,7 @@ class handler(BaseHTTPRequestHandler):
             'grant_type': 'authorization_code',
             'code': body['code'],
             'redirect_uri': body['redirect_uri'],
+            'refresh_token': 'YOUR_REFRESH_TOKEN',
             'client_id': CLIENT_ID,
             'client_secret': CLIENT_SECRET,
             'code_verifier': body['code_verifier']
